@@ -3,7 +3,45 @@ import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
+async function ensureAdminUser() {
+  const adminEmail = process.env.ADMIN_EMAIL?.trim().toLowerCase();
+  const adminPassword = process.env.ADMIN_PASSWORD?.trim();
+
+  if (!adminEmail || !adminPassword) {
+    console.log('ADMIN_EMAIL or ADMIN_PASSWORD not set, skipping admin user seed.');
+    return;
+  }
+
+  if (adminPassword.length < 8) {
+    throw new Error('ADMIN_PASSWORD must be at least 8 characters long.');
+  }
+
+  const password = await bcrypt.hash(adminPassword, 12);
+  await prisma.user.upsert({
+    where: { email: adminEmail },
+    update: {
+      fullName: 'Inno HUB Admin',
+      password,
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      provider: AuthProvider.EMAIL,
+      deletedAt: null,
+    },
+    create: {
+      email: adminEmail,
+      fullName: 'Inno HUB Admin',
+      password,
+      role: Role.SUPER_ADMIN,
+      status: UserStatus.ACTIVE,
+      provider: AuthProvider.EMAIL,
+    },
+  });
+
+  console.log(`Admin user ensured: ${adminEmail}`);
+}
+
 async function main() {
+  await ensureAdminUser();
   console.log('🌱 Starting specialized course seeding...');
 
   // 1. Ensure user exists
