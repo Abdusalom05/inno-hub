@@ -1,0 +1,269 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+enum Role {
+  USER
+  ADMIN
+  SUPER_ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+  PENDING
+}
+
+enum AuthProvider {
+  GOOGLE
+  EMAIL
+}
+
+enum CourseLevel {
+  BEGINNER
+  INTERMEDIATE
+  ADVANCED
+}
+
+enum CourseStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum TopicStatus {
+  DRAFT
+  PUBLISHED
+}
+
+enum EnrollmentStatus {
+  ACTIVE
+  COMPLETED
+  PAUSED
+}
+
+enum SubmissionAuditAction {
+  CREATED
+  UPDATED
+  AUTHOR_ADDED
+  AUTHOR_REMOVED
+}
+
+model User {
+  id           String       @id @default(uuid())
+  email        String       @unique
+  fullName     String
+  avatarUrl    String?
+  role         Role         @default(USER)
+  status       UserStatus   @default(ACTIVE)
+  provider     AuthProvider @default(GOOGLE)
+  password     String       @default("")
+  lastLoginAt  DateTime?
+  deletedAt    DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+
+  enrollments    Enrollment[]
+  lessonProgress LessonProgress[]
+  createdCourses Course[]         @relation("CourseCreator")
+  submissionAuditLogs SubmissionAuditLog[]
+
+  @@index([role])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Country {
+  id        String       @id @default(uuid())
+  name      String
+  code      String?      @unique
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  submissions Submission[]
+
+  @@index([name])
+}
+
+model Journal {
+  id        String       @id @default(uuid())
+  name      String
+  slug      String?      @unique
+  issn      String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  issues      Issue[]
+  submissions Submission[]
+
+  @@index([name])
+}
+
+model Issue {
+  id          String       @id @default(uuid())
+  journalId   String
+  journal     Journal      @relation(fields: [journalId], references: [id])
+  title       String
+  volume      String?
+  number      String?
+  year        Int?
+  publishedAt DateTime?
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  submissions Submission[]
+
+  @@index([journalId])
+  @@index([year])
+  @@unique([journalId, title])
+}
+
+model Submission {
+  id                 String                @id @default(uuid())
+  title              String
+  abstract           String                @db.Text
+  keywords           String[]              @default([])
+  references         String                @db.Text
+  correspondingEmail String
+  countryId          String
+  country            Country               @relation(fields: [countryId], references: [id])
+  journalId          String
+  journal            Journal               @relation(fields: [journalId], references: [id])
+  issueId            String
+  issue              Issue                 @relation(fields: [issueId], references: [id])
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  authors   Author[]
+  auditLogs SubmissionAuditLog[]
+
+  @@index([countryId])
+  @@index([journalId])
+  @@index([issueId])
+  @@index([correspondingEmail])
+  @@index([createdAt])
+  @@index([updatedAt])
+}
+
+model Author {
+  id           String     @id @default(uuid())
+  fullName     String
+  affiliation  String
+  email        String
+  submissionId String
+  submission   Submission @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+
+  @@index([submissionId])
+  @@index([email])
+}
+
+model SubmissionAuditLog {
+  id           String                @id @default(uuid())
+  submissionId String
+  submission   Submission            @relation(fields: [submissionId], references: [id], onDelete: Cascade)
+  actorId      String?
+  actor        User?                 @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action       SubmissionAuditAction
+  before       Json?
+  after        Json?
+  createdAt    DateTime              @default(now())
+
+  @@index([submissionId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+model Course {
+  id            String       @id
+  slug          String       @unique
+  title         String
+  description   String
+  icon          String?
+  imageUrl      String?
+  gradientFrom  String?
+  gradientTo    String?
+  level         CourseLevel
+  durationLabel String
+  totalLessons  Int          @default(0)
+  status        CourseStatus @default(DRAFT)
+  sortOrder     Int          @default(0)
+  createdBy     String?
+  creator       User?        @relation("CourseCreator", fields: [createdBy], references: [id])
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  topics         Topic[]
+  enrollments    Enrollment[]
+  lessonProgress LessonProgress[]
+
+  @@index([status])
+  @@index([sortOrder])
+}
+
+model Topic {
+  id              String      @id @default(uuid())
+  courseId        String
+  course          Course      @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lessonNumber    Int
+  title           String
+  videoId         String
+  durationLabel   String
+  contentMarkdown String?     @db.Text
+  contentHtml     String?     @db.Text
+  isPreview       Boolean     @default(false)
+  status          TopicStatus @default(PUBLISHED)
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  lessonProgress LessonProgress[]
+  enrollments    Enrollment[]     @relation("LastTopic")
+
+  @@unique([courseId, lessonNumber])
+  @@index([courseId])
+  @@index([status])
+}
+
+model Enrollment {
+  id                   String           @id @default(uuid())
+  userId               String
+  user                 User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId             String
+  course               Course           @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  enrolledAt           DateTime         @default(now())
+  lastTopicId          String?
+  lastTopic            Topic?           @relation("LastTopic", fields: [lastTopicId], references: [id])
+  completedTopicsCount Int              @default(0)
+  progressPercent      Decimal          @default(0) @db.Decimal(5, 2)
+  status               EnrollmentStatus @default(ACTIVE)
+  completedAt          DateTime?
+  updatedAt            DateTime         @updatedAt
+
+  @@unique([userId, courseId])
+  @@index([userId, status])
+  @@index([courseId])
+  @@index([status])
+}
+
+model LessonProgress {
+  id           String    @id @default(uuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  courseId     String
+  course       Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  topicId      String
+  topic        Topic     @relation(fields: [topicId], references: [id], onDelete: Cascade)
+  isCompleted  Boolean   @default(false)
+  completedAt  DateTime?
+  lastViewedAt DateTime?
+  watchSeconds Int       @default(0)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([userId, topicId])
+  @@index([userId, courseId])
+  @@index([courseId])
+}

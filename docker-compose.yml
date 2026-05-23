@@ -1,0 +1,25 @@
+# docker-compose.yml
+version: '3.8'
+services:
+  backend:
+    build: ./innohub-backend
+    ports:
+      - "3003:3000"
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      - redis
+
+  frontend:
+    build: ./innohub-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:alpine
+    ports:
+      - "6379:6379"

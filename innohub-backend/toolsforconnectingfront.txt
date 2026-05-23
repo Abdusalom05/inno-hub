@@ -1,0 +1,1524 @@
+==================================================
+BACKEND TO FRONTEND INTEGRATION REFERENCE
+==================================================
+
+1. PROJECT OVERVIEW
+
+Project type:
+- NestJS LMS backend
+- Prisma 5 + PostgreSQL
+- JWT auth + Firebase login
+- Active runtime modules from AppModule:
+  - Auth
+  - Users
+  - Courses
+  - Topics
+  - Enrollments
+  - Progress
+  - Admin Statistics
+
+Important runtime facts:
+- Global API prefix: /api
+- Swagger docs: /docs
+- CORS: enabled, origin=true, credentials=true
+- Global validation:
+  - whitelist=true
+  - forbidNonWhitelisted=true
+  - transform=true
+
+Meaning for frontend:
+- Every API path below is prefixed with /api
+- Unknown request fields can cause 400 or be stripped depending on validation metadata
+- Query params with @Type(() => Number) are auto-converted from strings
+
+Modules/files that are not part of active frontend integration:
+- src/app.controller.ts exists, but AppModule currently has no controllers array entries, so root GET /api is not active
+- No active uploads/media/settings/notifications modules found
+- No active file upload endpoints found
+
+2. AUTHENTICATION AND AUTHORIZATION
+
+Auth types:
+- Bearer JWT for protected endpoints
+- Firebase ID token accepted only by POST /api/auth/firebase
+
+Protected header format:
+- Authorization: Bearer <accessToken>
+
+JWT behavior:
+- Token payload contains:
+  - sub
+  - email
+  - role
+- On authenticated requests, request.user is a safe user object, not raw Prisma user
+- Password hash is never attached to request.user
+
+Authorization model:
+- Public endpoints:
+  - GET /api/courses
+  - GET /api/courses/:id
+  - GET /api/topics
+  - GET /api/topics/:id
+  - POST /api/auth/register
+  - POST /api/auth/login
+  - POST /api/auth/firebase
+- Auth-only endpoints:
+  - GET /api/auth/me
+  - POST /api/auth/logout
+  - GET /api/users/me
+  - PATCH /api/users/me
+  - POST /api/enrollments
+  - GET /api/enrollments/my-courses
+  - GET /api/enrollments/my-courses/:courseId
+  - POST /api/progress/lessons/:topicId
+  - POST /api/progress/lessons/:topicId/complete
+- Admin-only endpoints:
+  - GET /api/users
+  - GET /api/users/:id
+  - POST /api/courses
+  - PATCH /api/courses/:id
+  - DELETE /api/courses/:id
+  - POST /api/topics
+  - PATCH /api/topics/:id
+  - DELETE /api/topics/:id
+  - GET /api/admin/statistics/summary
+  - GET /api/admin/statistics/recent-users
+  - GET /api/admin/statistics/recent-enrollments
+
+Admin roles:
+- ADMIN
+- SUPER_ADMIN
+
+Guard behavior:
+- JwtAuthGuard requires a valid bearer token
+- RolesGuard checks request.user.role against @Roles(...)
+
+3. GLOBAL API CONVENTIONS
+
+Base URL:
+- /api
+
+Content type:
+- application/json
+
+Validation behavior:
+- DTO fields use class-validator
+- Query/page/limit number fields are transformed from string to number
+- isPreview query in topics is transformed from "true"/"false" string to boolean
+- Search query params are trimmed
+- Email values are normalized in AuthService using trim().toLowerCase()
+- Course slugs are auto-generated if not provided
+
+Pagination format:
+- Used by users, courses, topics, enrollments
+- Standard response shape:
+  {
+    "items": [...],
+    "meta": {
+      "page": number,
+      "limit": number,
+      "total": number,
+      "totalPages": number
+    }
+  }
+
+Message-only responses:
+- POST /api/auth/logout
+- DELETE /api/courses/:id
+- DELETE /api/topics/:id
+
+Error response format:
+- Standard NestJS HttpException shape is expected:
+  {
+    "statusCode": 400,
+    "message": "Validation or business error message",
+    "error": "Bad Request"
+  }
+- Validation errors may return message as string[] depending on the failure
+
+4. ENUMS AND SHARED CONSTANTS
+
+Prisma enums from prisma/schema.prisma:
+
+Role
+- USER
+- ADMIN
+- SUPER_ADMIN
+Used in:
+- auth JWT payload
+- role-based guards
+- user data
+- admin-protected routes
+
+UserStatus
+- ACTIVE
+- BLOCKED
+- PENDING
+Used in:
+- user records
+- auth checks
+- enrollment/progress permission checks
+
+AuthProvider
+- GOOGLE
+- EMAIL
+Used in:
+- users
+- user list filters
+
+CourseLevel
+- BEGINNER
+- INTERMEDIATE
+- ADVANCED
+Used in:
+- courses DTOs
+- course query filters
+
+CourseStatus
+- DRAFT
+- PUBLISHED
+Used in:
+- courses
+- public course visibility
+- enrollment availability
+- progress topic/course availability checks
+
+TopicStatus
+- DRAFT
+- PUBLISHED
+Used in:
+- topics
+- public topic visibility
+- progress aggregate counting
+
+EnrollmentStatus
+- ACTIVE
+- COMPLETED
+- PAUSED
+Used in:
+- enrollment records
+- my-courses filter
+- admin summary counts
+
+Shared safe user fields from authUserSelect:
+- id
+- firebaseUid
+- email
+- fullName
+- avatarUrl
+- role
+- status
+- provider
+- lastLoginAt
+- createdAt
+- updatedAt
+
+5. DTO REFERENCE
+
+DTO Name: RegisterDto
+File: src/auth/dto/register.dto.ts
+
+Fields:
+- email: string | required | must be valid email
+- password: string | required | min length 6
+- fullName: string | required | non-empty
+- avatarUrl: string | optional | must be valid URL
+- role: 'ADMIN' | present in class but no validation decorators, not used by service
+
+Validation:
+- email -> @IsEmail
+- password -> @IsString, @MinLength(6)
+- fullName -> @IsString, @IsNotEmpty
+- avatarUrl -> @IsOptional, @IsString, @IsUrl
+
+Notes:
+- AuthService ignores any role coming from client and always creates USER
+- Because global validation uses whitelist/forbidNonWhitelisted, this stray role field is a frontend pitfall and should not be sent
+
+Example payload:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123",
+  "fullName": "John Doe",
+  "avatarUrl": "https://cdn.example.com/avatar.jpg"
+}
+
+DTO Name: LoginDto
+File: src/auth/dto/login.dto.ts
+
+Fields:
+- email: string | required | valid email
+- password: string | required | non-empty string
+
+Validation:
+- email -> @IsEmail
+- password -> @IsString, @IsNotEmpty
+
+Example payload:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123"
+}
+
+DTO Name: FirebaseLoginDto
+File: src/auth/dto/firebase-login.dto.ts
+
+Fields:
+- idToken: string | required | Firebase ID token
+
+Validation:
+- idToken -> @IsString, @IsNotEmpty
+
+Frontend note:
+- Send idToken, not token
+
+Example payload:
+{
+  "idToken": "firebase-id-token-here"
+}
+
+DTO Name: AuthResponseDto
+File: src/auth/dto/auth-response.dto.ts
+
+Fields:
+- accessToken: string
+- user: AuthUserDto
+
+AuthUserDto fields:
+- id: string
+- email: string
+- fullName: string
+- avatarUrl: string | null
+- role: string
+- status: string
+- provider: string
+- firebaseUid: string | null
+- lastLoginAt: Date | null
+- createdAt: Date
+- updatedAt: Date
+
+Used as intended response shape for:
+- register
+- login
+- firebase login
+
+DTO Name: UpdateMyProfileDto
+File: src/users/dto/update-my-profile.dto.ts
+
+Fields:
+- fullName: string | optional | min length 2
+- avatarUrl: string | optional | valid URL
+- password: string | optional | min length 6
+
+Validation:
+- fullName -> @IsOptional, @IsString, @MinLength(2)
+- avatarUrl -> @IsOptional, @IsString, @IsUrl
+- password -> @IsOptional, @IsString, @MinLength(6)
+
+Notes:
+- Empty string for avatarUrl is not valid because @IsUrl will fail
+- If password is sent it is re-hashed server-side
+
+DTO Name: ListUsersQueryDto
+File: src/users/dto/list-users-query.dto.ts
+
+Fields:
+- role: enum(Role) | optional
+- status: enum(UserStatus) | optional
+- provider: enum(AuthProvider) | optional
+- search: string | optional | trimmed
+- page: number | optional | default 1 | min 1
+- limit: number | optional | default 10 | min 1 | max 100
+
+Validation:
+- role -> @IsEnum(Role)
+- status -> @IsEnum(UserStatus)
+- provider -> @IsEnum(AuthProvider)
+- search -> @IsString, trimmed via @Transform
+- page -> @Type(() => Number), @IsInt, @Min(1)
+- limit -> @Type(() => Number), @IsInt, @Min(1), @Max(100)
+
+Example query:
+- /api/users?role=ADMIN&status=ACTIVE&search=john&page=1&limit=20
+
+DTO Name: UserResponseDto
+File: src/users/dto/user-response.dto.ts
+
+Fields:
+- id
+- firebaseUid
+- email
+- fullName
+- avatarUrl
+- role
+- status
+- provider
+- lastLoginAt
+- createdAt
+- updatedAt
+
+Paginated wrapper:
+- PaginatedUsersResponseDto -> items + meta
+
+DTO Name: CreateCourseDto
+File: src/courses/dto/create-course.dto.ts
+
+Fields:
+- title: string | required | max 160
+- slug: string | optional | max 180
+- description: string | required
+- icon: string | optional | max 120
+- imageUrl: string | optional | must be valid URL
+- gradientFrom: string | optional | max 32
+- gradientTo: string | optional | max 32
+- level: enum(CourseLevel) | optional | default BEGINNER in service
+- durationLabel: string | required | max 64
+- totalLessons: number | optional | min 0 | default 0 in service
+- status: enum(CourseStatus) | optional | default DRAFT in service
+- sortOrder: number | optional | min 0 | default 0 in service
+- createdBy: string | optional
+
+Validation:
+- title -> @IsString, @IsNotEmpty, @MaxLength(160)
+- slug -> @IsOptional, @IsString, @MaxLength(180)
+- description -> @IsString, @IsNotEmpty
+- icon -> @IsOptional, @IsString, @MaxLength(120)
+- imageUrl -> @IsOptional, @IsString, @IsUrl
+- gradientFrom -> @IsOptional, @IsString, @MaxLength(32)
+- gradientTo -> @IsOptional, @IsString, @MaxLength(32)
+- level -> @IsOptional, @IsEnum(CourseLevel)
+- durationLabel -> @IsString, @IsNotEmpty, @MaxLength(64)
+- totalLessons -> @IsOptional, @IsInt, @Min(0)
+- status -> @IsOptional, @IsEnum(CourseStatus)
+- sortOrder -> @IsOptional, @IsInt, @Min(0)
+- createdBy -> @IsOptional, @IsString, @IsNotEmpty
+
+Example payload:
+{
+  "title": "NestJS Full Course",
+  "slug": "nestjs-full-course",
+  "description": "A production-ready NestJS course for backend engineers.",
+  "icon": "book-open",
+  "imageUrl": "https://cdn.example.com/course-cover.png",
+  "gradientFrom": "#0F172A",
+  "gradientTo": "#2563EB",
+  "level": "BEGINNER",
+  "durationLabel": "12 hours",
+  "totalLessons": 0,
+  "status": "DRAFT",
+  "sortOrder": 0,
+  "createdBy": "user-id"
+}
+
+DTO Name: UpdateCourseDto
+File: src/courses/dto/update-course.dto.ts
+
+Fields:
+- Partial of CreateCourseDto
+- All fields optional
+
+Notes:
+- If slug omitted but title changed, service regenerates slug from title
+
+DTO Name: ListCoursesQueryDto
+File: src/courses/dto/list-courses-query.dto.ts
+
+Fields:
+- search: string | optional | trimmed
+- level: enum(CourseLevel) | optional
+- page: number | optional | default 1 | min 1
+- limit: number | optional | default 10 | min 1 | max 100
+
+Validation:
+- search -> @IsString + trim transform
+- level -> @IsEnum(CourseLevel)
+- page -> @Type(() => Number), @IsInt, @Min(1)
+- limit -> @Type(() => Number), @IsInt, @Min(1), @Max(100)
+
+DTO Name: CourseResponseDto family
+File: src/courses/dto/course-response.dto.ts
+
+Relevant frontend fields:
+- CourseSummaryDto:
+  - id
+  - slug
+  - title
+  - description
+  - icon
+  - imageUrl
+  - gradientFrom
+  - gradientTo
+  - level
+  - durationLabel
+  - totalLessons
+  - publishedTopicsCount
+  - enrollmentsCount
+  - status
+  - sortOrder
+  - createdAt
+  - updatedAt
+  - creator { id, fullName, avatarUrl } | null
+- CourseDetailDto adds:
+  - topics[] with id, lessonNumber, title, durationLabel, isPreview, status
+
+DTO Name: CreateTopicDto
+File: src/topics/dto/create-topic.dto.ts
+
+Fields:
+- courseId: string | required
+- lessonNumber: number | required | min 1
+- title: string | required | max 160
+- videoId: string | required | max 255
+- durationLabel: string | required | max 64
+- contentMarkdown: string | optional
+- contentHtml: string | optional
+- isPreview: boolean | optional | default false in service
+- status: enum(TopicStatus) | optional | default DRAFT in service
+
+Validation:
+- courseId -> @IsString, @IsNotEmpty
+- lessonNumber -> @IsInt, @Min(1)
+- title -> @IsString, @IsNotEmpty, @MaxLength(160)
+- videoId -> @IsString, @IsNotEmpty, @MaxLength(255)
+- durationLabel -> @IsString, @IsNotEmpty, @MaxLength(64)
+- contentMarkdown -> @IsOptional, @IsString
+- contentHtml -> @IsOptional, @IsString
+- isPreview -> @IsOptional, @IsBoolean
+- status -> @IsOptional, @IsEnum(TopicStatus)
+
+Important business rule:
+- Unique combination (courseId, lessonNumber) must not already exist
+
+DTO Name: UpdateTopicDto
+File: src/topics/dto/update-topic.dto.ts
+
+Fields:
+- Partial of CreateTopicDto
+
+DTO Name: ListTopicsQueryDto
+File: src/topics/dto/list-topics-query.dto.ts
+
+Fields:
+- courseId: string | optional
+- search: string | optional | trimmed
+- isPreview: boolean | optional | transformed from "true"/"false"
+- page: number | optional | default 1 | min 1
+- limit: number | optional | default 10 | min 1 | max 100
+
+Validation:
+- courseId -> @IsString
+- search -> @IsString + trim transform
+- isPreview -> custom @Transform + @IsBoolean
+- page -> @Type(() => Number), @IsInt, @Min(1)
+- limit -> @Type(() => Number), @IsInt, @Min(1), @Max(100)
+
+DTO Name: TopicResponseDto family
+File: src/topics/dto/topic-response.dto.ts
+
+TopicResponseDto fields:
+- id
+- courseId
+- lessonNumber
+- title
+- videoId
+- durationLabel
+- contentMarkdown
+- contentHtml
+- isPreview
+- status
+- createdAt
+- updatedAt
+- course {
+    id,
+    slug,
+    title,
+    status,
+    level,
+    durationLabel,
+    totalLessons,
+    sortOrder
+  }
+
+DTO Name: EnrollCourseDto
+File: src/enrollment/dto/enroll-course.dto.ts
+
+Fields:
+- courseId: string | required
+
+Validation:
+- courseId -> @IsString, @IsNotEmpty
+
+DTO Name: MyCoursesQueryDto
+File: src/enrollment/dto/my-courses-query.dto.ts
+
+Fields:
+- status: enum(EnrollmentStatus) | optional
+- search: string | optional | trimmed
+- page: number | optional | default 1 | min 1
+- limit: number | optional | default 10 | min 1 | max 100
+
+Validation:
+- status -> @IsEnum(EnrollmentStatus)
+- search -> @IsString + trim transform
+- page -> @Type(() => Number), @IsInt, @Min(1)
+- limit -> @Type(() => Number), @IsInt, @Min(1), @Max(100)
+
+DTO Name: UpdateLessonProgressDto
+File: src/progress/dto/update-lesson-progress.dto.ts
+
+Fields:
+- watchSeconds: number | required | min 0
+
+Validation:
+- watchSeconds -> @Type(() => Number), @IsInt, @Min(0)
+
+Important contract:
+- watchSeconds is absolute
+- backend stores max(existing.watchSeconds, incoming.watchSeconds)
+- retries do not double count
+
+DTO Name: CompleteLessonDto
+File: src/progress/dto/complete-lesson.dto.ts
+
+Fields:
+- watchSeconds: number | optional | min 0
+
+Validation:
+- watchSeconds -> @IsOptional, @Type(() => Number), @IsInt, @Min(0)
+
+DTO Name: ProgressResponseDto family
+File: src/progress/dto/progress-response.dto.ts
+
+Represents intended shape:
+- topic
+- lesson
+- enrollment with nested progress summary
+
+DTO Name: DashboardSummaryDto
+File: src/admin/statistics/dto/dashboard-summary.dto.ts
+
+Fields:
+- totalUsers: number
+- totalCourses: number
+- totalTopics: number
+- totalEnrollments: number
+- activeEnrollments: number
+- completedEnrollments: number
+
+No query DTOs exist for admin statistics limit params:
+- recent-users and recent-enrollments accept raw query param limit
+- parsed in service as:
+  - default 10
+  - max 50
+  - values <= 0 or invalid -> 10
+
+6. ENDPOINT REFERENCE
+
+[POST] /api/auth/register
+Controller: AuthController
+Auth: Public
+Roles: None
+Request DTO: RegisterDto
+Response: inferred AuthResponseDto shape
+
+Body:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123",
+  "fullName": "John Doe",
+  "avatarUrl": "https://cdn.example.com/avatar.jpg"
+}
+
+Response shape:
+{
+  "accessToken": "jwt",
+  "user": {
+    "id": "uuid",
+    "email": "john@example.com",
+    "fullName": "John Doe",
+    "avatarUrl": "https://cdn.example.com/avatar.jpg",
+    "role": "USER",
+    "status": "ACTIVE",
+    "provider": "EMAIL",
+    "firebaseUid": null,
+    "lastLoginAt": null,
+    "createdAt": "date",
+    "updatedAt": "date"
+  }
+}
+
+Frontend notes:
+- Send fullName, not name
+- Do not send role
+- Email is normalized to lowercase by backend
+
+[POST] /api/auth/login
+Controller: AuthController
+Auth: Public
+Roles: None
+Request DTO: LoginDto
+Response: AuthResponseDto shape
+
+Body:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123"
+}
+
+Behavior:
+- invalid credentials -> 401
+- BLOCKED or PENDING user -> 403
+- lastLoginAt updated on success
+
+[POST] /api/auth/firebase
+Controller: AuthController
+Auth: Public
+Roles: None
+Request DTO: FirebaseLoginDto
+Response: AuthResponseDto shape
+
+Body:
+{
+  "idToken": "firebase-id-token"
+}
+
+Behavior:
+- verifies Firebase token
+- finds by firebaseUid or email
+- links firebaseUid to existing email user
+- creates new user if needed
+
+Frontend notes:
+- Send idToken, not accessToken, token, or firebaseToken
+
+[GET] /api/auth/me
+Controller: AuthController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+
+Response:
+- safe authenticated user object
+
+[POST] /api/auth/logout
+Controller: AuthController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+- none
+
+Response:
+{
+  "message": "Logged out successfully."
+}
+
+[GET] /api/users/me
+Controller: UsersController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+
+Response:
+- safe user object from authUserSelect
+
+[PATCH] /api/users/me
+Controller: UsersController
+Auth: Required
+Roles: None
+Request DTO: UpdateMyProfileDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+{
+  "fullName": "John Doe",
+  "avatarUrl": "https://cdn.example.com/avatar.jpg",
+  "password": "NewStrongPassword123"
+}
+
+Response:
+- updated safe user object
+
+Frontend notes:
+- avatarUrl must be valid absolute URL if provided
+- empty string for avatarUrl will fail validation
+
+[GET] /api/users
+Controller: UsersController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Query DTO: ListUsersQueryDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Query params:
+- role
+- status
+- provider
+- search
+- page
+- limit
+
+Response:
+{
+  "items": [safeUser, ...],
+  "meta": {
+    "page": 1,
+    "limit": 10,
+    "total": 123,
+    "totalPages": 13
+  }
+}
+
+[GET] /api/users/:id
+Controller: UsersController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+
+Params:
+- id: string
+
+Response:
+- safe user object
+
+[POST] /api/courses
+Controller: CoursesController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Request DTO: CreateCourseDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+{
+  "title": "NestJS Full Course",
+  "slug": "nestjs-full-course",
+  "description": "A production-ready NestJS course for backend engineers.",
+  "icon": "book-open",
+  "imageUrl": "https://cdn.example.com/course-cover.png",
+  "gradientFrom": "#0F172A",
+  "gradientTo": "#2563EB",
+  "level": "BEGINNER",
+  "durationLabel": "12 hours",
+  "totalLessons": 0,
+  "status": "DRAFT",
+  "sortOrder": 0,
+  "createdBy": "user-id"
+}
+
+Response: inferred course summary
+- id
+- slug
+- title
+- description
+- icon
+- imageUrl
+- gradientFrom
+- gradientTo
+- level
+- durationLabel
+- totalLessons
+- publishedTopicsCount
+- enrollmentsCount
+- status
+- sortOrder
+- createdAt
+- updatedAt
+- creator
+
+Behavior:
+- if slug omitted -> auto-generated from title
+- if createdBy omitted -> current admin user id used
+
+[GET] /api/courses
+Controller: CoursesController
+Auth: Public
+Roles: None
+Query DTO: ListCoursesQueryDto
+
+Query params:
+- search
+- level
+- page
+- limit
+
+Visibility:
+- only PUBLISHED courses
+
+Response:
+{
+  "items": [
+    {
+      "id": "course-id",
+      "slug": "nestjs-full-course",
+      "title": "NestJS Full Course",
+      "description": "text",
+      "icon": "book-open",
+      "imageUrl": "https://...",
+      "gradientFrom": "#0F172A",
+      "gradientTo": "#2563EB",
+      "level": "BEGINNER",
+      "durationLabel": "12 hours",
+      "totalLessons": 12,
+      "publishedTopicsCount": 12,
+      "enrollmentsCount": 99,
+      "status": "PUBLISHED",
+      "sortOrder": 0,
+      "createdAt": "date",
+      "updatedAt": "date",
+      "creator": {
+        "id": "user-id",
+        "fullName": "Admin User",
+        "avatarUrl": null
+      }
+    }
+  ],
+  "meta": { ... }
+}
+
+[GET] /api/courses/:id
+Controller: CoursesController
+Auth: Public
+Roles: None
+Params:
+- id: course id
+
+Visibility:
+- only PUBLISHED course
+
+Response:
+- Course summary fields plus:
+  - topics[] containing only published topics
+
+[PATCH] /api/courses/:id
+Controller: CoursesController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Request DTO: UpdateCourseDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+- any subset of CreateCourseDto fields
+
+Behavior:
+- if slug or title changes -> slug uniqueness checked and regenerated if needed
+
+[DELETE] /api/courses/:id
+Controller: CoursesController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+
+Response:
+{
+  "message": "Course deleted successfully."
+}
+
+[POST] /api/topics
+Controller: TopicsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Request DTO: CreateTopicDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+{
+  "courseId": "course-id",
+  "lessonNumber": 1,
+  "title": "NestJS Controllers",
+  "videoId": "youtube-video-id",
+  "durationLabel": "18 min",
+  "contentMarkdown": "markdown text",
+  "contentHtml": "<p>html</p>",
+  "isPreview": false,
+  "status": "DRAFT"
+}
+
+Behavior:
+- course must exist
+- unique (courseId, lessonNumber) enforced
+- on create/update/delete, course.totalLessons is recalculated
+
+Response:
+- topic summary with nested course summary
+
+[GET] /api/topics
+Controller: TopicsController
+Auth: Public
+Roles: None
+Query DTO: ListTopicsQueryDto
+
+Query params:
+- courseId
+- search
+- isPreview
+- page
+- limit
+
+Visibility:
+- only PUBLISHED topics
+- only topics whose course is PUBLISHED
+
+Ordering:
+- course.sortOrder asc
+- lessonNumber asc
+- createdAt asc
+
+Response:
+{
+  "items": [
+    {
+      "id": "topic-id",
+      "courseId": "course-id",
+      "lessonNumber": 1,
+      "title": "NestJS Controllers",
+      "videoId": "youtube-video-id",
+      "durationLabel": "18 min",
+      "contentMarkdown": "text",
+      "contentHtml": "<p>text</p>",
+      "isPreview": false,
+      "status": "PUBLISHED",
+      "createdAt": "date",
+      "updatedAt": "date",
+      "course": {
+        "id": "course-id",
+        "slug": "nestjs-full-course",
+        "title": "NestJS Full Course",
+        "status": "PUBLISHED",
+        "level": "BEGINNER",
+        "durationLabel": "12 hours",
+        "totalLessons": 12,
+        "sortOrder": 0
+      }
+    }
+  ],
+  "meta": { ... }
+}
+
+[GET] /api/topics/:id
+Controller: TopicsController
+Auth: Public
+Roles: None
+Visibility:
+- only PUBLISHED topic in PUBLISHED course
+
+Response:
+- same inferred shape as topic summary
+
+[PATCH] /api/topics/:id
+Controller: TopicsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Request DTO: UpdateTopicDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Behavior:
+- partial update
+- if courseId changes, new course must exist
+- unique (courseId, lessonNumber) still enforced
+- totalLessons recalculated for affected courses
+
+[DELETE] /api/topics/:id
+Controller: TopicsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+
+Response:
+{
+  "message": "Topic deleted successfully."
+}
+
+[POST] /api/enrollments
+Controller: EnrollmentController
+Auth: Required
+Roles: None
+Request DTO: EnrollCourseDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Body:
+{
+  "courseId": "course-id"
+}
+
+Rules:
+- user must be ACTIVE
+- user must not be BLOCKED/PENDING
+- course must exist and be PUBLISHED
+- duplicate enrollment prevented
+
+Response:
+{
+  "id": "enrollment-id",
+  "status": "ACTIVE",
+  "enrolledAt": "date",
+  "updatedAt": "date",
+  "completedAt": null,
+  "progress": {
+    "completedTopicsCount": 0,
+    "totalTopics": 12,
+    "progressPercent": 0
+  },
+  "lastTopic": null,
+  "course": {
+    "id": "course-id",
+    "slug": "nestjs-full-course",
+    "title": "NestJS Full Course",
+    "description": "text",
+    "icon": null,
+    "imageUrl": null,
+    "gradientFrom": null,
+    "gradientTo": null,
+    "level": "BEGINNER",
+    "durationLabel": "12 hours",
+    "totalLessons": 12,
+    "status": "PUBLISHED",
+    "sortOrder": 0,
+    "createdAt": "date",
+    "updatedAt": "date",
+    "creator": {
+      "id": "user-id",
+      "fullName": "Admin",
+      "avatarUrl": null
+    }
+  }
+}
+
+[GET] /api/enrollments/my-courses
+Controller: EnrollmentController
+Auth: Required
+Roles: None
+Query DTO: MyCoursesQueryDto
+Headers:
+- Authorization: Bearer <jwt>
+
+Query params:
+- status
+- search
+- page
+- limit
+
+Response:
+{
+  "items": [
+    {
+      "id": "enrollment-id",
+      "status": "ACTIVE",
+      "enrolledAt": "date",
+      "updatedAt": "date",
+      "completedAt": null,
+      "progress": {
+        "completedTopicsCount": 2,
+        "totalTopics": 12,
+        "progressPercent": 16.67
+      },
+      "lastTopic": {
+        "id": "topic-id",
+        "lessonNumber": 2,
+        "title": "NestJS Providers",
+        "durationLabel": "14 min",
+        "isPreview": false
+      },
+      "course": { ...course summary... }
+    }
+  ],
+  "meta": { ... }
+}
+
+[GET] /api/enrollments/my-courses/:courseId
+Controller: EnrollmentController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+
+Response:
+- same as my-courses item plus:
+  - course.topics[] with published topics summary
+
+[POST] /api/progress/lessons/:topicId
+Controller: ProgressController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+Request DTO: UpdateLessonProgressDto
+
+Body:
+{
+  "watchSeconds": 320
+}
+
+Rules:
+- topic must exist
+- topic's course must be PUBLISHED
+- user must be enrolled in owning course
+- watchSeconds stored as max(existing, incoming)
+- enrollment.lastTopicId updated
+- enrollment aggregates recalculated
+- only PUBLISHED topics count toward completion percent
+
+Response:
+{
+  "topic": {
+    "id": "topic-id",
+    "courseId": "course-id",
+    "lessonNumber": 1,
+    "title": "NestJS Controllers",
+    "durationLabel": "18 min",
+    "isPreview": false,
+    "status": "PUBLISHED",
+    "course": {
+      "id": "course-id",
+      "title": "NestJS Full Course",
+      "slug": "nestjs-full-course",
+      "status": "PUBLISHED",
+      "totalLessons": 12
+    }
+  },
+  "lesson": {
+    "id": "progress-id",
+    "topicId": "topic-id",
+    "courseId": "course-id",
+    "watchSeconds": 320,
+    "isCompleted": false,
+    "lastViewedAt": "date",
+    "completedAt": null,
+    "createdAt": "date",
+    "updatedAt": "date"
+  },
+  "enrollment": {
+    "id": "enrollment-id",
+    "status": "ACTIVE",
+    "enrolledAt": "date",
+    "updatedAt": "date",
+    "completedAt": null,
+    "lastTopic": {
+      "id": "topic-id",
+      "lessonNumber": 1,
+      "title": "NestJS Controllers",
+      "durationLabel": "18 min",
+      "isPreview": false
+    },
+    "progress": {
+      "completedTopicsCount": 0,
+      "totalTopics": 12,
+      "progressPercent": 0
+    }
+  }
+}
+
+[POST] /api/progress/lessons/:topicId/complete
+Controller: ProgressController
+Auth: Required
+Roles: None
+Headers:
+- Authorization: Bearer <jwt>
+Request DTO: CompleteLessonDto
+
+Body:
+{
+  "watchSeconds": 540
+}
+
+Rules:
+- idempotent completion
+- marks lesson completed
+- completedAt set
+- enrollment status becomes COMPLETED if all published topics are completed
+
+Response:
+- same overall shape as updateLessonProgress
+
+[GET] /api/admin/statistics/summary
+Controller: AdminStatisticsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+Response DTO: DashboardSummaryDto
+
+Response:
+{
+  "totalUsers": 100,
+  "totalCourses": 10,
+  "totalTopics": 80,
+  "totalEnrollments": 250,
+  "activeEnrollments": 200,
+  "completedEnrollments": 50
+}
+
+[GET] /api/admin/statistics/recent-users
+Controller: AdminStatisticsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+Query params:
+- limit (string parsed to number, default 10, max 50)
+
+Response:
+- array of safe users with fields:
+  - id
+  - email
+  - fullName
+  - avatarUrl
+  - role
+  - status
+  - provider
+  - createdAt
+  - updatedAt
+
+[GET] /api/admin/statistics/recent-enrollments
+Controller: AdminStatisticsController
+Auth: Required
+Roles: ADMIN | SUPER_ADMIN
+Headers:
+- Authorization: Bearer <jwt>
+Query params:
+- limit (string parsed to number, default 10, max 50)
+
+Response:
+[
+  {
+    "id": "enrollment-id",
+    "enrolledAt": "date",
+    "updatedAt": "date",
+    "completedAt": null,
+    "status": "ACTIVE",
+    "progressPercent": 50,
+    "completedTopicsCount": 6,
+    "user": {
+      "id": "user-id",
+      "email": "john@example.com",
+      "fullName": "John Doe",
+      "avatarUrl": null,
+      "role": "USER",
+      "status": "ACTIVE",
+      "provider": "EMAIL"
+    },
+    "course": {
+      "id": "course-id",
+      "slug": "nestjs-full-course",
+      "title": "NestJS Full Course",
+      "imageUrl": null,
+      "level": "BEGINNER",
+      "status": "PUBLISHED"
+    }
+  }
+]
+
+7. FRONTEND FIELD MAPPING NOTES
+
+AUTH
+- Backend expects fullName, not name
+- Backend expects idToken for Firebase login, not token
+- Do not send role on register despite the stray property in RegisterDto
+
+USERS
+- PATCH /users/me expects fullName, avatarUrl, password
+- avatarUrl must be a valid URL if sent
+- There is no separate displayName field
+
+COURSES
+- Backend expects imageUrl, not image
+- Backend expects icon, not thumbnail
+- Backend expects durationLabel, not duration
+- Backend expects totalLessons as number
+- Backend expects createdBy if you want to override creator; otherwise omit it
+- Backend returns publishedTopicsCount and enrollmentsCount for frontend cards
+
+TOPICS / LESSONS
+- Topic is the backend lesson resource
+- Backend expects lessonNumber, not order
+- Backend expects videoId, not videoUrl
+- Backend expects durationLabel, not duration
+- Backend expects contentMarkdown/contentHtml, not description
+- Backend uses isPreview boolean
+
+ENROLLMENTS
+- To enroll, send courseId only
+- my-courses list returns progress nested under progress, not at root
+
+PROGRESS
+- Client sends absolute watchSeconds
+- Do not send incremental seconds
+- POST /progress/lessons/:topicId updates watch progress only
+- POST /progress/lessons/:topicId/complete is the explicit completion action
+
+ADMIN
+- recent-users and recent-enrollments use raw limit query param string, not a dedicated DTO
+
+ENUM UI MAPPING EXAMPLES
+- CourseLevel:
+  - UI "Boshlang'ich" -> BEGINNER
+  - UI "O'rta" -> INTERMEDIATE
+  - UI "Yuqori" -> ADVANCED
+- CourseStatus:
+  - UI "Qoralama" -> DRAFT
+  - UI "Nashr qilingan" -> PUBLISHED
+- TopicStatus:
+  - UI "Qoralama" -> DRAFT
+  - UI "Nashr qilingan" -> PUBLISHED
+- EnrollmentStatus:
+  - UI "Faol" -> ACTIVE
+  - UI "Tugallangan" -> COMPLETED
+  - UI "Pauzada" -> PAUSED
+
+8. COMMON VALIDATION ERRORS
+
+Likely causes of 400 Bad Request:
+- Sending unknown DTO fields because forbidNonWhitelisted=true
+- Sending empty string for fields validated by @IsUrl
+- Sending translated enum labels instead of raw enum values
+- Sending page/limit as non-numeric strings
+- Sending lessonNumber/order as 0 or negative
+- Sending watchSeconds as negative
+- Sending invalid email format
+- Sending password shorter than 6 chars
+- Sending isPreview query as something other than true/false
+- Sending duplicate (courseId, lessonNumber) when creating/updating topic
+
+Likely causes of 401 Unauthorized:
+- Missing Authorization header on protected routes
+- Invalid/expired JWT
+- Invalid Firebase ID token
+- Invalid email/password
+
+Likely causes of 403 Forbidden:
+- Using USER role on admin-only endpoint
+- BLOCKED or PENDING user trying to authenticate or learn
+- Trying to update lesson progress without being enrolled
+
+Likely causes of 404 Not Found:
+- Requesting unpublished course/topic via public GET
+- Enrolling into non-existent or non-published course
+- Accessing my enrolled course when enrollment does not exist
+- Progress update against non-existent topic
+
+9. SAMPLE PAYLOADS
+
+Register:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123",
+  "fullName": "John Doe"
+}
+
+Login:
+{
+  "email": "john@example.com",
+  "password": "StrongPassword123"
+}
+
+Firebase login:
+{
+  "idToken": "firebase-id-token"
+}
+
+Create course:
+{
+  "title": "NestJS Full Course",
+  "slug": "nestjs-full-course",
+  "description": "A production-ready NestJS course for backend engineers.",
+  "icon": "book-open",
+  "imageUrl": "https://cdn.example.com/course-cover.png",
+  "gradientFrom": "#0F172A",
+  "gradientTo": "#2563EB",
+  "level": "BEGINNER",
+  "durationLabel": "12 hours",
+  "status": "DRAFT",
+  "sortOrder": 1
+}
+
+Create topic:
+{
+  "courseId": "course-id",
+  "lessonNumber": 1,
+  "title": "NestJS Controllers",
+  "videoId": "youtube-video-id",
+  "durationLabel": "18 min",
+  "contentMarkdown": "Lesson notes",
+  "contentHtml": "<p>Lesson notes</p>",
+  "isPreview": false,
+  "status": "PUBLISHED"
+}
+
+Enroll:
+{
+  "courseId": "course-id"
+}
+
+Update watch progress:
+{
+  "watchSeconds": 320
+}
+
+Complete lesson:
+{
+  "watchSeconds": 540
+}
+
+Invalid examples that will likely fail:
+- Register with UI field name name instead of fullName
+- Firebase login with token instead of idToken
+- Create topic with order instead of lessonNumber
+- Create course with image instead of imageUrl
+
+10. FRONTEND INTEGRATION CHECKLIST
+
+- Use /api as the base prefix for all requests
+- Send Authorization: Bearer <token> on protected routes
+- Store and reuse accessToken from auth responses
+- Use raw enum values from backend, not translated labels
+- Send fullName for user registration/profile
+- Send idToken for Firebase login
+- Send lessonNumber for topics, not order
+- Send imageUrl and icon for courses, not image/thumbnail
+- Treat /courses and /topics public endpoints as published-only catalogs
+- Use paginated responses as items + meta
+- Do not assume all admin endpoints have query DTOs; recent admin stats only accept limit
+- Expect decimals like progressPercent to come back as JS numbers in mapped responses
+
+QUICK FIXES FOR FRONTEND
+
+1. Register form:
+- Send fullName, not name
+- Do not send role
+
+2. Firebase login:
+- Send idToken, not token
+
+3. Course form:
+- Send imageUrl, not image
+- Send icon, not thumbnail
+- Send durationLabel, not duration
+
+4. Topic form:
+- Send lessonNumber, not order
+- Send videoId, not videoUrl
+- Send contentMarkdown/contentHtml, not description
+
+5. Progress tracking:
+- Send absolute watchSeconds
+- Do not send deltas/increments
+
+6. Query params:
+- page and limit must be numbers
+- isPreview must be true/false
+
+7. Public catalog:
+- Frontend should not expect draft courses/topics from GET /courses or GET /topics

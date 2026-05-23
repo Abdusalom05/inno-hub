@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+firebase-service-account.json
+
+# Local database/runtime
+.pgdata/
+postgres.log
+*.log
+server*.log
+
+# Package manager caches
+.npm-cache/
+
+# Editor/OS
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
