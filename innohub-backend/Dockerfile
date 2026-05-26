@@ -1,18 +1,36 @@
-# Backend Dockerfile (innohub-backend/Dockerfile)
-FROM node:20-alpine AS builder
+FROM node:20-bookworm-slim AS builder
+
 WORKDIR /app
+
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
 COPY package*.json ./
 COPY prisma ./prisma/
-RUN npm install
-COPY . .
+
+RUN npm ci
 RUN npx prisma generate
+
+COPY . .
+
 RUN npm run build
 
-FROM node:20-alpine
+
+FROM node:20-bookworm-slim AS runner
+
 WORKDIR /app
+
+ENV NODE_ENV=production
+
+RUN apt-get update -y && apt-get install -y openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+
+COPY package*.json ./
+COPY prisma ./prisma/
+
+RUN npm ci --omit=dev
+RUN npx prisma generate
+
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/prisma ./prisma
+
 EXPOSE 3000
-CMD ["npm", "run", "start:prod"]
+
+CMD ["sh", "-c", "npx prisma migrate deploy && npm run start:prod"]
