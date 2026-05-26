@@ -7,13 +7,23 @@ services:
       - "3003:3000"
     environment:
       DATABASE_URL: ${DATABASE_URL}
+      JWT_SECRET: ${JWT_SECRET}
+      CORS_ORIGIN: ${CORS_ORIGIN}
+      FRONTEND_URL: ${FRONTEND_URL}
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET}
+      GOOGLE_CALLBACK_URL: ${GOOGLE_CALLBACK_URL}
       REDIS_HOST: redis
       REDIS_PORT: 6379
     depends_on:
       - redis
 
   frontend:
-    build: ./innohub-frontend
+    build:
+      context: ./innohub-frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+        VITE_GOOGLE_AUTH_URL: ${VITE_GOOGLE_AUTH_URL:-/api/auth/google}
     ports:
       - "80:80"
     depends_on:

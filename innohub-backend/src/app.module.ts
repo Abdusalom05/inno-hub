@@ -24,6 +24,7 @@ import * as Joi from 'joi';
         DATABASE_URL: Joi.string().required(),
         JWT_SECRET: Joi.string().min(32).required(),
         CORS_ORIGIN: Joi.string().optional(),
+        FRONTEND_URL: Joi.string().uri().optional(),
       }),
     }),
 
